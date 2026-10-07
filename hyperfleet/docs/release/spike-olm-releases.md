@@ -283,7 +283,7 @@ spec:
 
 On the `main` branch, add the RC bundle to the `candidate-vX` channel in
 `catalog/vX/release-template.yaml`. Push this change to main and tag the commit
-`catalog-vX.Y.0-rcN`, which will trigger the catalog-tag pipeline.
+`catalog-vX.Y.Z-rcN`, which will trigger the catalog-tag pipeline.
 
 **Example:** Adding `candidate-v1` for `release-1.0` and adding the rc1 entry
 just built
@@ -303,10 +303,13 @@ entries:
 
 Cut `release-X.Y` branch in `hyperfleet-e2e` repo.
 
-E2E tests validate against the `candidate-v1` channel. Validate OLM install
-mechanics (RBAC, CRDs, install modes), component health, and end-to-end
-functionality in the Prow cluster. Run E2E tests and validate upgrade
-functionality.
+This step is a prerequisite for the release gate. Configure the Prow job to
+install HyperFleet from the catalog's `candidate-vX` channel before running
+this validation.
+
+After that setup exists, E2E tests validate OLM install mechanics (RBAC, CRDs,
+install modes), component health, end-to-end functionality, and upgrades in
+the Prow cluster.
 
 ### Step 6: Handle failures (if any)
 
