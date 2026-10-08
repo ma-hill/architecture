@@ -1,7 +1,7 @@
 ---
 Status: Active
 Owner: HyperFleet Architecture Team
-Last Updated: 2026-10-06
+Last Updated: 2026-10-08
 ---
 
 # SPIKE: OLM Bundle and Catalog Release Process
@@ -194,40 +194,38 @@ path to `v1.1.0` (from `release-1.1`) unless the `release-1.1` branch carried
 forward all prior entries — and hotfixes on older branches would need to be
 propagated forward to whichever branch is "latest."
 
-**Solution:** Versioned catalog directories on `main`
+**Solution:** Single aggregate catalog on `main`
 
-The catalog templates live on `main` in versioned subdirectories, one per major
-version:
+The catalog templates live on `main` in a single `release-template.yaml` file
+that contains all major versions:
 
 ### Proposed catalog directory structure
 
 ```text
 catalog/
 ├── konflux-template.yaml
-├── v1
-│   └── release-template.yaml
-└── v2
-    └── release-template.yaml
+└── release-template.yaml
 ```
 
-Each major version's directory is the **single source of truth** for that
-version's upgrade graph. When a new bundle is released (e.g., `v1.1.0`), its
-channel entry and bundle digest are added to `catalog/v1/` on `main` via a PR.
+The `release-template.yaml` is the **single source of truth** for all major
+versions' upgrade graphs. When a new bundle is released (e.g., `v1.1.0`), its
+channel entry and bundle digest are added to the appropriate channel
+(`candidate-v1` or `stable-v1`) via a PR.
 
 This approach works because:
 
-- **Version isolation via directories** — `v2` work never touches `catalog/v1/`,
-  so concurrent major versions don't interfere
+- **All major versions in one file** — `release-template.yaml` contains both v1
+  and v2 channels, so the rendered catalog always includes all supported major
+  versions
 - **Complete upgrade graph in one place** — no carrying forward entries between
-  branches, no aggregation needed
+  branches, no directory aggregation needed
 - **Catalog builds from a tagged commit** — when you tag `catalog-v1.1.0` on
   `main`, the pipeline builds from that exact commit. Later merges to `main`
   don't affect the build
 - **Release branches stay focused** — they own the bundle (component digests in
   `kustomization.yaml`, CSV). The catalog is a separate concern on `main`
 - **No additional components or branches** — the existing catalog component on
-  `main` can build release catalogs by passing the version directory as a build
-  arg
+  `main` can build release catalogs using the single template
 
 The nightly dev catalog (`konflux-template.yaml`) remains unchanged on `main` —
 it continues to use the unversioned `stable` channel with `v0.0.1` for CI
@@ -244,7 +242,7 @@ Required Changes:
 
 ### Step 1: Cut release branches and build component images
 
-Cut `release-X.Y-rcN` branches on each component repo (`hyperfleet-api`,
+Cut `release-X.Y` branches on each component repo (`hyperfleet-api`,
 `hyperfleet-sentinel`, `hyperfleet-adapter`, `hyperfleet-operator`). Tag
 component RC versions (`vX.Y.Z-rcN`) on their respective release branches.
 Konflux builds and pushes the component images to Quay automatically via the
@@ -282,7 +280,7 @@ spec:
 ### Step 4: Update the catalog
 
 On the `main` branch, add the RC bundle to the `candidate-vX` channel in
-`catalog/vX/release-template.yaml`. Push this change to main and tag the commit
+`catalog/release-template.yaml`. Push this change to main and tag the commit
 `catalog-vX.Y.Z-rcN`, which will trigger the catalog-tag pipeline.
 
 **Example:** Adding `candidate-v1` for `release-1.0` and adding the rc1 entry
@@ -332,8 +330,8 @@ Sentinel):
    `name: hyperfleet-operator.v1.0.0-rc2 version: 1.0.0-rc2`)
 
 In both cases, update the `candidate-vX` channel in
-`catalog/vX/release-template.yaml` on the `main` branch. Tag the change and
-rebuild the catalog image and revalidate.
+`catalog/release-template.yaml` on the `main` branch. Tag the change and rebuild
+the catalog image and revalidate.
 
 **Example:**
 
@@ -342,8 +340,14 @@ schema: olm.channel
 name: candidate-v1
 package: hyperfleet-operator
 entries:
+  - name: hyperfleet-operator.v1.0.0-rc1
+    skipRange: "<1.0.0"
   - name: hyperfleet-operator.v1.0.0-rc2
     replaces: hyperfleet-operator.v1.0.0-rc1
+  - schema: olm.bundle
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest-rc1>
+  - schema: olm.bundle
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest-rc2>
 ```
 
 ### Step 7: Promote to stable channel
@@ -351,15 +355,15 @@ entries:
 Once everything is validated cleanly, tag the release-X.Y branch with
 `bundle-vX.Y.Z`. This will trigger the official bundle build. Update the
 `stable-vX` channel and add the `olm.bundle` entry in
-`catalog/vX/release-template.yaml` on the `main` branch. Tag the change and
-rebuild the catalog image.
+`catalog/release-template.yaml` on the `main` branch. Tag the change and rebuild
+the catalog image.
 
 **Example:**
 
 1. Tag `bundle-v1.0.0` on the operator's `release-1.0` branch, which will
    trigger the tag pipeline to build the official bundle
 2. Add the bundle to the `stable-v1` channel and its `olm.bundle` digest to
-   `catalog/v1/release-template.yaml` on `main`, tag that change as
+   `catalog/release-template.yaml` on `main`, tag that change as
    `catalog-v1.0.0` and build the catalog image
 
 ```yaml
@@ -533,22 +537,30 @@ which channel each version actually lands in.
 
 ### Catalog Image Tagging
 
-The catalog image uses a single mutable tag (e.g.,
-`quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-operator-catalog:latest`).
+The catalog image uses a single mutable tag:
+`quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-operator-catalog:latest`.
 
 Each catalog build is triggered by a unique git tag (`catalog-vX.Y.Z-rcN`,
-`catalog-vX.Y.Z`, etc.) but pushes to the same `:latest` image tag. The digest
-behind `:latest` updates with each build.
+`catalog-vX.Y.Z`, etc.) and pushes to `:latest`. Production CatalogSources
+reference this `:latest` tag.
 
-There should be a validation gate to ensure that even when updating to a new
-stable release, the previous stable release is still available in the catalog
-image.
+**Aggregate catalog strategy:** Each release uses
+`catalog/release-template.yaml`, which contains **all** major version channels
+(v1, v2, etc.) in a single FBC template. The `:latest` image always contains all
+supported major versions. This allows:
+
+- v1 clusters continue receiving v1 updates after v2 ships
+- Cross-major upgrades via Subscription channel switch
+
+See [Required Changes](#2-create-a-catalog-tag-pipeline) for the pipeline
+configuration. Validation gates should verify that all previously published
+major versions remain present after each catalog rebuild.
 
 ### Catalog Build Flow
 
 ```text
 Release (main branch):
-  update catalog/vX/release-template.yaml
+  update catalog/release-template.yaml
   push catalog-vX.Y.Z git tag → catalog-tag pipeline → catalog image :latest
 ```
 
@@ -624,25 +636,25 @@ spec:
 ...
 pipelineSpec:
   tasks:
-  - name: parse-version
-    params:
-    - name: GIT_TAG
-      value: $(params.git-tag)
-    taskSpec:
-      results:
-      - name: VERSION
-        description: Version extracted from git tag ref, dropped the v
-      - name: MAJOR
-        description: Major extracted from git tag persist the v
-      steps:
-      - name: parse
-        image: registry.access.redhat.com/ubi9-minimal:latest
-        script: |
-          #!/usr/bin/env bash
-          VERSION="${GIT_TAG#bundle-v}"
-          MAJOR="v${VERSION%%.*}"
-          printf '%s' "$VERSION" > "$(results.VERSION.path)"
-          printf '%s' "$MAJOR" > "$(results.MAJOR.path)"
+    - name: parse-version
+      params:
+        - name: GIT_TAG
+          value: $(params.git-tag)
+      taskSpec:
+        results:
+          - name: VERSION
+            description: Version extracted from git tag ref, dropped the v
+          - name: MAJOR
+            description: Major extracted from git tag persist the v
+        steps:
+          - name: parse
+            image: registry.access.redhat.com/ubi9-minimal:latest
+            script: |
+              #!/usr/bin/env bash
+              VERSION="${GIT_TAG#bundle-v}"
+              MAJOR="v${VERSION%%.*}"
+              printf '%s' "$VERSION" > "$(results.VERSION.path)"
+              printf '%s' "$MAJOR" > "$(results.MAJOR.path)"
 ```
 
 #### 2. Create a catalog tag pipeline
@@ -671,7 +683,7 @@ annotations:
 1. `opm-run-command` task `OPM_ARGS`
 
 ```yaml
-# OPM_ARGS using the parsed major version to select the release template
+# OPM_ARGS uses the single release template containing all major versions
 - name: OPM_ARGS
   value:
     - alpha
@@ -680,49 +692,19 @@ annotations:
     - --migrate-level=bundle-object-to-csv-metadata
     - -o
     - yaml
-    - catalog/$(tasks.parse-version.results.major)/release-template.yaml
-```
-
-1. `parse-version` task to determine which `release-template.yaml` to use.
-
-```yaml
-# parse-version task and add the git-tag param
-spec:
-  params:
-    - name: git-tag
-      value: "{{git_tag}}"
-...
-pipelineSpec:
-  tasks:
-  - name: parse-version
-    params:
-    - name: GIT_TAG
-      value: $(params.git-tag)
-    taskSpec:
-      results:
-      - name: MAJOR
-        description: Major extracted from git tag persist the v
-      steps:
-      - name: parse
-        image: registry.access.redhat.com/ubi9-minimal:latest
-        script: |
-          #!/usr/bin/env bash
-          VERSION="${GIT_TAG#bundle-v}"
-          MAJOR="v${VERSION%%.*}"
-          printf '%s' "$MAJOR" > "$(results.MAJOR.path)"
+    - catalog/release-template.yaml
 ```
 
 #### 3. Create a release template
 
-Add `catalog/v1/release-template.yaml` on `main` branch. This file defines
-versioned channels and updates the appropriate channel as new bundles are
-released. The existing `konflux-template.yaml` stays unchanged for nightly
-builds on main — it continues to use the unversioned `stable` channel with
-`v0.0.1`. The bundle image reference gets appended when new images are added to
-a channel. Each bundle version referenced in the channel entries needs a
-corresponding `olm.bundle` entry pointing to its image digest.
+Add `catalog/release-template.yaml` on `main` branch. This file defines all
+versioned channels across all major versions. As new bundles are released, the
+appropriate channel is updated and bundle digests are appended. The existing
+`konflux-template.yaml` stays unchanged for nightly builds on main — it
+continues to use the unversioned `stable` channel with `v0.0.1`.
 
-**Example:**
+**Example:** `catalog/release-template.yaml` showing both v1 and v2 channels
+(state after v2 ships)
 
 ```yaml
 ---
@@ -730,8 +712,9 @@ schema: olm.template.basic
 entries:
   - schema: olm.package
     name: hyperfleet-operator
-    defaultChannel: stable-v1
+    defaultChannel: stable-v2
     description: "HyperFleet Operator"
+  # v1 channels
   - schema: olm.channel
     name: candidate-v1
     package: hyperfleet-operator
@@ -742,12 +725,35 @@ entries:
     package: hyperfleet-operator
     entries:
       - name: hyperfleet-operator.v1.0.0
-  # Updated when new bundle versions are released
+      - name: hyperfleet-operator.v1.0.1
+        replaces: hyperfleet-operator.v1.0.0
+  # v2 channels (added when v2 ships)
+  - schema: olm.channel
+    name: candidate-v2
+    package: hyperfleet-operator
+    entries:
+      - name: hyperfleet-operator.v2.0.0-rc1
+  - schema: olm.channel
+    name: stable-v2
+    package: hyperfleet-operator
+    entries:
+      - name: hyperfleet-operator.v2.0.0
+  # Bundle image references for all versions
   - schema: olm.bundle
-    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest>
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<v1.0.0-rc1-digest>
   - schema: olm.bundle
-    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest>
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<v1.0.0-digest>
+  - schema: olm.bundle
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<v1.0.1-digest>
+  - schema: olm.bundle
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<v2.0.0-rc1-digest>
+  - schema: olm.bundle
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<v2.0.0-digest>
 ```
+
+**Note:** When v2 ships, update the `defaultChannel` to `stable-v2` and add the
+v2 channel entries. All v1 channels and bundles remain in the file so the
+catalog continues to serve both major versions.
 
 ### `konflux-release-data` Repository
 
