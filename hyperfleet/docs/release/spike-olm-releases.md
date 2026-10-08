@@ -606,10 +606,10 @@ metadata:
   value:
     - $(params.build-args[*])
     - KUSTOMIZE_VARIANT=config/manifests/prod
-    - BUNDLE_VERSION=$(tasks.parse-version.results.full)
-    - APP_VERSION=$(tasks.parse-version.results.full)
-    - CHANNELS=candidate-$(tasks.parse-version.results.major),stable-$(tasks.parse-version.results.major)
-    - DEFAULT_CHANNEL=stable-$(tasks.parse-version.results.major)
+    - BUNDLE_VERSION=$(tasks.parse-version.results.VERSION)
+    - APP_VERSION=$(tasks.parse-version.results.VERSION)
+    - CHANNELS=candidate-$(tasks.parse-version.results.MAJOR),stable-$(tasks.parse-version.results.MAJOR)
+    - DEFAULT_CHANNEL=stable-$(tasks.parse-version.results.MAJOR)
     - VALIDATE_RELATED_IMAGES=true
 ```
 
@@ -622,32 +622,27 @@ spec:
     - name: git-tag
       value: "{{git_tag}}"
 ...
-tasks:
+pipelineSpec:
+  tasks:
   - name: parse-version
+    params:
+    - name: GIT_TAG
+      value: $(params.git-tag)
     taskSpec:
       results:
-        - name: full
-          description: Full version (e.g., 1.0.0-rc1)
-        - name: major
-          description: Major version with v prefix (e.g., v1)
-        - name: minor
-          description: Minor version (e.g., 0)
-        - name: major-minor
-          description: Major.minor version (e.g., 1.0)
+      - name: VERSION
+        description: Version extracted from git tag ref, dropped the v
+      - name: MAJOR
+        description: Major extracted from git tag persist the v
       steps:
-        - name: parse
-          script: |
-            #!/bin/bash
-            TAG="$(params.git-tag)"
-            # bundle-v1.0.0-rc1 → 1.0.0-rc1
-            VERSION="${TAG#bundle-v}"
-            MAJOR="${VERSION%%.*}"
-            REMAINDER="${VERSION#*.}"
-            MINOR="${REMAINDER%%.*}"
-            echo -n "$VERSION" > "$(results.full.path)"
-            echo -n "v$MAJOR" > "$(results.major.path)"
-            echo -n "$MINOR" > "$(results.minor.path)"
-            echo -n "${MAJOR}.${MINOR}" > "$(results.major-minor.path)"
+      - name: parse
+        image: registry.access.redhat.com/ubi9-minimal:latest
+        script: |
+          #!/usr/bin/env bash
+          VERSION="${GIT_TAG#bundle-v}"
+          MAJOR="v${VERSION%%.*}"
+          printf '%s' "$VERSION" > "$(results.VERSION.path)"
+          printf '%s' "$MAJOR" > "$(results.MAJOR.path)"
 ```
 
 #### 2. Create a catalog tag pipeline
@@ -697,25 +692,24 @@ spec:
     - name: git-tag
       value: "{{git_tag}}"
 ...
-- tasks:
-  name: parse-version
-  taskSpec:
-    results:
-      - name: major
-        description: Major version extracted from the catalog tag (e.g., v1)
-    steps:
+pipelineSpec:
+  tasks:
+  - name: parse-version
+    params:
+    - name: GIT_TAG
+      value: $(params.git-tag)
+    taskSpec:
+      results:
+      - name: MAJOR
+        description: Major extracted from git tag persist the v
+      steps:
       - name: parse
-        image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+        image: registry.access.redhat.com/ubi9-minimal:latest
         script: |
-          #!/bin/bash
-          TAG="$(params.git-tag)"
-          # catalog-v1.0.0 → v1.0.0
-          VERSION="${TAG#catalog-}"
-          # v1.0.0 → v1
-          MAJOR="v${VERSION#v}"
-          MAJOR="${MAJOR%%.*}"
-          MAJOR="v${MAJOR#v}"
-          echo -n "$MAJOR" > "$(results.major.path)"
+          #!/usr/bin/env bash
+          VERSION="${GIT_TAG#bundle-v}"
+          MAJOR="v${VERSION%%.*}"
+          printf '%s' "$MAJOR" > "$(results.MAJOR.path)"
 ```
 
 #### 3. Create a release template
@@ -750,9 +744,9 @@ entries:
       - name: hyperfleet-operator.v1.0.0
   # Updated when new bundle versions are released
   - schema: olm.bundle
-    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:abc123
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest>
   - schema: olm.bundle
-    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:def456
+    image: quay.io/redhat-services-prod/.../hyperfleet-operator-bundle@sha256:<digest>
 ```
 
 ### `konflux-release-data` Repository
