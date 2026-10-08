@@ -244,11 +244,11 @@ Required Changes:
 
 ### Step 1: Cut release branches and build component images
 
-Cut `release-X.Y` branches on each component repo (`hyperfleet-api`,
+Cut `release-X.Y-rcN` branches on each component repo (`hyperfleet-api`,
 `hyperfleet-sentinel`, `hyperfleet-adapter`, `hyperfleet-operator`). Tag
-component official versions (`vX.Y.Z`) on their respective release
-branches—Konflux builds and pushes the component images to Quay automatically
-via the existing tag pipelines.
+component RC versions (`vX.Y.Z-rcN`) on their respective release branches.
+Konflux builds and pushes the component images to Quay automatically via the
+existing tag pipelines.
 
 ### Step 2: Update the component images
 
@@ -286,7 +286,7 @@ On the `main` branch, add the RC bundle to the `candidate-vX` channel in
 `catalog-vX.Y.Z-rcN`, which will trigger the catalog-tag pipeline.
 
 **Example:** Adding `candidate-v1` for `release-1.0` and adding the rc1 entry
-just built
+that was built in step 3.
 
 ```yaml
 schema: olm.channel
@@ -304,12 +304,12 @@ entries:
 Cut `release-X.Y` branch in `hyperfleet-e2e` repo.
 
 This step is a prerequisite for the release gate. Configure the Prow job to
-install HyperFleet from the catalog's `candidate-vX` channel before running
-this validation.
+install HyperFleet from the catalog's `candidate-vX` channel before running this
+validation.
 
 After that setup exists, E2E tests validate OLM install mechanics (RBAC, CRDs,
-install modes), component health, end-to-end functionality, and upgrades in
-the Prow cluster.
+install modes), component health, end-to-end functionality, and upgrades in the
+Prow cluster.
 
 ### Step 6: Handle failures (if any)
 
@@ -443,6 +443,7 @@ entries:
 ```
 
 Clusters on `v1.0.0` will upgrade through `v1.0.1` → `v1.1.0` automatically.
+Channels will be the single source of truth for the upgrade graph.
 
 #### Using `skipRange` for direct upgrades
 
@@ -467,8 +468,6 @@ With this configuration:
 
 - A cluster on `v1.0.0` or `v1.0.1` can upgrade **directly** to `v1.1.0`
 - No need to enumerate individual versions
-
-For HyperFleet, `skipRange` is the expected default for all releases.
 
 **Cross-major upgrades** (e.g., `stable-v1` → `stable-v2`) require the cluster
 admin to change their Subscription's channel. This is intentional — major
@@ -534,20 +533,23 @@ which channel each version actually lands in.
 
 ### Catalog Image Tagging
 
-The catalog image uses a mutable tag per major version (e.g.,
-`quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-operator-catalog:v1`).
+The catalog image uses a single mutable tag (e.g.,
+`quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-operator-catalog:latest`).
 
 Each catalog build is triggered by a unique git tag (`catalog-vX.Y.Z-rcN`,
-`catalog-vX.Y.Z`, etc.) but pushes to the same `:vX` image tag. The digest
-behind `:vX` updates with each build. When a new major version ships, a new tag
-is created (e.g., `:v2`).
+`catalog-vX.Y.Z`, etc.) but pushes to the same `:latest` image tag. The digest
+behind `:latest` updates with each build.
+
+There should be a validation gate to ensure that even when updating to a new
+stable release, the previous stable release is still available in the catalog
+image.
 
 ### Catalog Build Flow
 
 ```text
 Release (main branch):
   update catalog/vX/release-template.yaml
-  push catalog-vX.Y.Z git tag → catalog-tag pipeline → catalog image :vX
+  push catalog-vX.Y.Z git tag → catalog-tag pipeline → catalog image :latest
 ```
 
 ### Current Catalog Build
@@ -759,3 +761,18 @@ entries:
 
 Add a ReleasePlanAdmission in `konflux-release-data` for the catalog component
 so that Konflux can release catalog images to the production Quay registry.
+Default tags are currently set as:
+
+```yaml
+tags:
+  - "{{ labels.version }}"
+  - "{{ labels.version }}-{{ timestamp }}"
+  - "{{ git_sha }}"
+  - latest
+```
+
+```yaml
+- name: hyperfleet-operator-catalog
+  repositories:
+    - url: "quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-operator-catalog"
+```
